@@ -1,324 +1,295 @@
-<!DOCTYPE html>
-<html lang="ko">
-<head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>이윤 극대화 가격 세분화 시뮬레이터</title>
-    <!-- Tailwind CSS CDN 로드: 멋진 디자인을 위해 사용됩니다. -->
-    <script src="https://cdn.tailwindcss.com"></script>
-    <script>
-        // Tailwind 설정을 정의합니다.
-        tailwind.config = {
-            theme: {
-                extend: {
-                    fontFamily: {
-                        sans: ['Inter', 'sans-serif'],
-                    },
-                    colors: {
-                        'primary': '#4f46e5', // 주 색상: 인디고
-                        'secondary': '#6366f1',
-                        'success': '#10b981', // 성공/긍정 메시지 색상
-                        'warning': '#f59e0b', // 경고 메시지 색상
-                        'danger': '#ef4444', // 위험/오류 메시지 색상
-                    }
-                }
-            }
-        }
-    </script>
-    <style>
-        /* 기본 스타일 설정 */
-        body { font-family: 'Inter', sans-serif; background-color: #f3f4f6; }
-        .card { transition: all 0.3s ease-in-out; border-radius: 0.75rem; }
-        /* 마우스 오버 시 살짝 떠오르는 효과 */
-        .card:hover { transform: translateY(-2px); box-shadow: 0 10px 15px -3px rgba(0, 0, 0, 0.1), 0 4px 6px -2px rgba(0, 0, 0, 0.05); }
-    </style>
-</head>
-<body>
-
-    <div class="min-h-screen p-4 sm:p-8">
-        <!-- Header (제목 섹션) -->
-        <header class="text-center mb-8">
-            <h1 class="text-3xl sm:text-4xl font-extrabold text-gray-900 leading-tight">이윤 극대화 가격 시뮬레이터</h1>
-            <p class="mt-2 text-base sm:text-lg text-gray-500">DNN 모델 기반 고객별 가격 민감도 및 최적 가격 분석 (50개 샘플)</p>
-            <div class="h-1 w-24 bg-primary mx-auto mt-3 rounded-full"></div>
-        </header>
-
-        <!-- Main Content (주요 콘텐츠 섹션) -->
-        <main class="max-w-6xl mx-auto grid grid-cols-1 lg:grid-cols-3 gap-6">
-
-            <!-- Control Panel (입력 및 고객 정보) -->
-            <div class="lg:col-span-1 space-y-6">
-                <!-- 1. 고객 선택 카드 -->
-                <div id="customer-select-card" class="card bg-white p-6 shadow-lg border border-gray-100">
-                    <h2 class="text-xl font-semibold text-primary mb-4 border-b pb-2">1. 고객 선택</h2>
-                    <div>
-                        <label for="customer-id" class="block text-sm font-medium text-gray-700 mb-1">고객 ID (0-49 범위 내에서 선택)</label>
-                        <select id="customer-id" onchange="fetchCustomerInfo()"
-                            class="mt-1 block w-full pl-3 pr-10 py-2 text-base border-gray-300 focus:outline-none focus:ring-primary focus:border-primary sm:text-sm rounded-md shadow-sm">
-                            <!-- 옵션은 JavaScript에 의해 채워집니다 -->
-                        </select>
-                    </div>
-                </div>
-
-                <!-- 2. 고객 특징 표시 카드 -->
-                <div id="customer-features-card" class="card bg-white p-6 shadow-lg border border-gray-100">
-                    <h2 class="text-xl font-semibold text-primary mb-4 border-b pb-2">2. 고객 특징 분석</h2>
-                    <dl class="space-y-3 text-sm">
-                        <div class="flex justify-between">
-                            <dt class="font-medium text-gray-600">복수 구매 횟수 (multi_purchase_count)</dt>
-                            <dd id="feature-multi" class="font-bold text-gray-900">N/A</dd>
-                        </div>
-                        <div class="flex justify-between">
-                            <dt class="font-medium text-gray-600">지난 달 총 구매 (total_purchase_last_month)</dt>
-                            <dd id="feature-total" class="font-bold text-gray-900">N/A</dd>
-                        </div>
-                        <div class="flex justify-between">
-                            <dt class="font-medium text-gray-600">장바구니 망설임 (cart_abandon_count)</dt>
-                            <dd id="feature-abandon" class="font-bold text-gray-900">N/A</dd>
-                        </div>
-                    </dl>
-                </div>
-
-                <!-- 모델 제안 최적 가격 카드 -->
-                <div id="optimization-card" class="card bg-white p-6 shadow-lg border-2 border-primary">
-                    <h2 class="text-xl font-bold text-primary mb-4 border-b pb-2 flex items-center">
-                        <!-- 아이콘: 성장 (Growth) -->
-                        <svg xmlns="http://www.w3.org/2000/svg" class="h-6 w-6 mr-2" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 7h8m0 0v8m0-8l-8 8-4-4-6 6" />
-                        </svg>
-                        모델 제안: 최적 가격
-                    </h2>
-                    <p id="optimal-price-display" class="text-4xl font-extrabold text-primary text-center">
-                        N/A
-                    </p>
-                    <p class="text-sm text-center text-gray-500 mt-2">
-                        *이윤 극대화를 위한 맞춤 가격입니다.
-                    </p>
-                </div>
-            </div>
-
-            <!-- Simulation and Results (시뮬레이션 및 결과) -->
-            <div class="lg:col-span-2 space-y-6">
-                <!-- 3. 테스트 가격 입력 카드 -->
-                <div id="simulation-input-card" class="card bg-white p-6 shadow-lg border border-gray-100">
-                    <h2 class="text-xl font-semibold text-primary mb-4 border-b pb-2">3. 테스트 가격 시뮬레이션</h2>
-                    <div class="flex flex-col sm:flex-row gap-4 items-end">
-                        <div class="flex-grow w-full">
-                            <label for="test-price" class="block text-sm font-medium text-gray-700 mb-1">테스트할 가격 (원)</label>
-                            <!-- 가격 입력 범위는 4500원에서 13500원 사이로 설정했습니다. -->
-                            <input type="number" id="test-price" value="9000" min="4500" max="13500" step="100"
-                                class="mt-1 block w-full pl-3 pr-3 py-2 text-base border-gray-300 focus:outline-none focus:ring-primary focus:border-primary sm:text-sm rounded-md shadow-sm"
-                                placeholder="예: 9000">
-                        </div>
-                        <button onclick="analyzePrice()"
-                            class="w-full sm:w-auto px-6 py-2 border border-transparent text-sm font-medium rounded-md text-white bg-success hover:bg-opacity-90 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-success transition ease-in-out duration-150 shadow-md">
-                            가격 예측 실행
-                        </button>
-                    </div>
-                </div>
-
-                <!-- 4. 예측 결과 카드 -->
-                <div id="results-card" class="card bg-white p-6 shadow-lg border border-gray-100">
-                    <h2 class="text-xl font-semibold text-primary mb-4 border-b pb-2">4. 예측 결과</h2>
-                    <div class="grid grid-cols-1 sm:grid-cols-2 gap-4">
-                        <!-- 예측 구매 확률 -->
-                        <div class="bg-gray-50 p-4 rounded-lg">
-                            <p class="text-sm font-medium text-gray-500">예측 구매 확률 (P)</p>
-                            <p id="result-prob" class="text-3xl font-extrabold text-indigo-600 mt-1">0.00%</p>
-                            <p class="text-xs text-gray-400 mt-1">입력 가격으로 구매할 확률</p>
-                        </div>
-                        <!-- 예상 수익 -->
-                        <div class="bg-gray-50 p-4 rounded-lg">
-                            <p class="text-sm font-medium text-gray-500">예상 수익 (Price × P)</p>
-                            <p id="result-revenue" class="text-3xl font-extrabold text-green-600 mt-1">0원</p>
-                            <p class="text-xs text-gray-400 mt-1">최대화해야 할 핵심 지표</p>
-                        </div>
-                    </div>
-
-                    <!-- 예측 결과 메시지 박스 -->
-                    <div id="message-box" class="mt-6 p-3 text-sm rounded-lg border hidden" role="alert"></div>
-
-                </div>
-            </div>
-        </main>
-    </div>
-
-    <!-- JavaScript 로직 -->
-    <script>
-        // 이 데이터는 Python 코드의 최종 분석 결과를 하드코딩하여 시뮬레이션합니다.
-        // 고객 ID 0번부터 49번까지 총 50명의 데이터가 포함되어 있습니다.
-        const customerData = {
-            // 고객 ID: { multi(복수구매), total(총구매), abandon(장바구니), optimalPrice(최적가격), baseProb(기본확률) }
-            0: { multi: 12, total: 45, abandon: 1, optimalPrice: 8400, baseProb: 0.65 },
-            1: { multi: 0, total: 1, abandon: 5, optimalPrice: 6500, baseProb: 0.40 },
-            2: { multi: 5, total: 20, abandon: 0, optimalPrice: 9300, baseProb: 0.85 },
-            3: { multi: 30, total: 100, abandon: 2, optimalPrice: 9900, baseProb: 0.95 },
-            4: { multi: 1, total: 3, abandon: 10, optimalPrice: 6000, baseProb: 0.30 },
-            5: { multi: 8, total: 35, abandon: 0, optimalPrice: 9100, baseProb: 0.80 },
-            6: { multi: 0, total: 0, abandon: 0, optimalPrice: 9000, baseProb: 0.70 },
-            7: { multi: 15, total: 60, abandon: 0, optimalPrice: 9600, baseProb: 0.90 },
-            8: { multi: 4, total: 15, abandon: 3, optimalPrice: 7800, baseProb: 0.55 },
-            9: { multi: 2, total: 7, abandon: 8, optimalPrice: 5500, baseProb: 0.25 },
-            10: { multi: 6, total: 22, abandon: 1, optimalPrice: 8500, baseProb: 0.75 },
-            11: { multi: 1, total: 5, abandon: 6, optimalPrice: 6400, baseProb: 0.38 },
-            12: { multi: 18, total: 55, abandon: 0, optimalPrice: 10200, baseProb: 0.92 },
-            13: { multi: 0, total: 2, abandon: 3, optimalPrice: 7000, baseProb: 0.45 },
-            14: { multi: 10, total: 40, abandon: 0, optimalPrice: 9000, baseProb: 0.78 },
-            15: { multi: 25, total: 80, abandon: 1, optimalPrice: 9800, baseProb: 0.94 },
-            16: { multi: 3, total: 10, abandon: 7, optimalPrice: 6200, baseProb: 0.35 },
-            17: { multi: 7, total: 30, abandon: 2, optimalPrice: 8000, baseProb: 0.60 },
-            18: { multi: 14, total: 50, abandon: 0, optimalPrice: 9500, baseProb: 0.88 },
-            19: { multi: 9, total: 38, abandon: 3, optimalPrice: 8100, baseProb: 0.68 },
-            20: { multi: 1, total: 4, abandon: 8, optimalPrice: 5800, baseProb: 0.28 },
-            21: { multi: 20, total: 65, abandon: 0, optimalPrice: 9700, baseProb: 0.91 },
-            22: { multi: 4, total: 18, abandon: 1, optimalPrice: 8300, baseProb: 0.72 },
-            23: { multi: 0, total: 0, abandon: 5, optimalPrice: 6800, baseProb: 0.42 },
-            24: { multi: 11, total: 42, abandon: 0, optimalPrice: 9200, baseProb: 0.82 },
-            25: { multi: 2, total: 8, abandon: 4, optimalPrice: 7500, baseProb: 0.50 },
-            26: { multi: 17, total: 58, abandon: 1, optimalPrice: 8900, baseProb: 0.77 },
-            27: { multi: 3, total: 12, abandon: 9, optimalPrice: 5900, baseProb: 0.32 },
-            28: { multi: 28, total: 95, abandon: 0, optimalPrice: 10500, baseProb: 0.97 },
-            29: { multi: 5, total: 25, abandon: 2, optimalPrice: 7900, baseProb: 0.63 },
-            30: { multi: 1, total: 2, abandon: 12, optimalPrice: 5000, baseProb: 0.20 },
-            31: { multi: 13, total: 48, abandon: 0, optimalPrice: 9400, baseProb: 0.87 },
-            32: { multi: 6, total: 28, abandon: 3, optimalPrice: 7700, baseProb: 0.58 },
-            33: { multi: 0, total: 1, abandon: 2, optimalPrice: 7200, baseProb: 0.48 },
-            34: { multi: 16, total: 52, abandon: 0, optimalPrice: 9800, baseProb: 0.93 },
-            35: { multi: 8, total: 33, abandon: 4, optimalPrice: 7600, baseProb: 0.52 },
-            36: { multi: 2, total: 5, abandon: 1, optimalPrice: 8600, baseProb: 0.70 },
-            37: { multi: 22, total: 70, abandon: 0, optimalPrice: 10000, baseProb: 0.96 },
-            38: { multi: 4, total: 17, abandon: 5, optimalPrice: 7300, baseProb: 0.46 },
-            39: { multi: 9, total: 37, abandon: 0, optimalPrice: 9100, baseProb: 0.81 },
-            40: { multi: 1, total: 1, abandon: 6, optimalPrice: 6300, baseProb: 0.36 },
-            41: { multi: 19, total: 62, abandon: 0, optimalPrice: 9900, baseProb: 0.95 },
-            42: { multi: 3, total: 11, abandon: 3, optimalPrice: 7400, baseProb: 0.49 },
-            43: { multi: 7, total: 29, abandon: 1, optimalPrice: 8700, baseProb: 0.74 },
-            44: { multi: 0, total: 0, abandon: 1, optimalPrice: 8800, baseProb: 0.71 },
-            45: { multi: 10, total: 39, abandon: 5, optimalPrice: 7100, baseProb: 0.44 },
-            46: { multi: 24, total: 75, abandon: 0, optimalPrice: 10100, baseProb: 0.96 },
-            47: { multi: 5, total: 21, abandon: 4, optimalPrice: 7600, baseProb: 0.53 },
-            48: { multi: 18, total: 61, abandon: 0, optimalPrice: 9600, baseProb: 0.90 },
-            49: { multi: 2, total: 6, abandon: 7, optimalPrice: 6100, baseProb: 0.33 }
-        };
-
-        let currentCustomerId = 0;
-
-        // 웹페이지가 완전히 로드되면 실행됩니다.
-        document.addEventListener('DOMContentLoaded', () => {
-            const select = document.getElementById('customer-id');
-            const ids = Object.keys(customerData).map(Number);
-            // 드롭다운에 고객 ID 옵션을 추가합니다.
-            ids.forEach(id => {
-                const option = document.createElement('option');
-                option.value = id;
-                option.textContent = `고객 ID: ${id}`;
-                select.appendChild(option);
-            });
-            fetchCustomerInfo(); // 초기 고객 정보 (ID 0)를 로드합니다.
-        });
+# %% 1. Imports & 기본 설정
 
 
-        /**
-         * 선택된 고객 ID에 따라 화면에 특징 및 최적 가격 정보를 표시합니다.
-         */
-        function fetchCustomerInfo() {
-            const select = document.getElementById('customer-id');
-            currentCustomerId = parseInt(select.value, 10);
-            const customer = customerData[currentCustomerId];
+import numpy as np
+import pandas as pd
+from google.colab import files
+from pathlib import Path
 
-            if (!customer) return;
 
-            // 고객 특징을 업데이트합니다.
-            document.getElementById('feature-multi').textContent = customer.multi.toLocaleString();
-            document.getElementById('feature-total').textContent = customer.total.toLocaleString();
-            document.getElementById('feature-abandon').textContent = customer.abandon.toLocaleString();
+import matplotlib.pyplot as plt
 
-            // 최적 가격을 업데이트합니다.
-            document.getElementById('optimal-price-display').textContent = `${customer.optimalPrice.toLocaleString()}원`;
 
-            // 이전 예측 결과를 초기화합니다.
-            document.getElementById('result-prob').textContent = '0.00%';
-            document.getElementById('result-revenue').textContent = '0원';
-            hideMessage();
-        }
+from sklearn.model_selection import train_test_split
+from sklearn.preprocessing import StandardScaler
+from sklearn.metrics import (
+    roc_auc_score, accuracy_score, precision_recall_fscore_support,
+    mean_absolute_error, mean_squared_error
+)
+from sklearn.isotonic import IsotonicRegression
 
-        /**
-         * (시뮬레이션 로직) 테스트 가격에 대한 예측 구매 확률과 예상 수익을 계산합니다.
-         * 실제 DNN 모델의 복잡한 예측을 간단한 공식으로 흉내냅니다.
-         */
-        function simulatePrediction(price, customer) {
-            const { optimalPrice, baseProb } = customer;
 
-            // 가격이 최적 가격에서 멀어질수록 확률이 떨어지도록 조정합니다.
-            const priceDiff = Math.abs(price - optimalPrice);
-            
-            // 가격 차이 3000원을 기준으로 최대 40%까지 확률이 감소하도록 설정합니다.
-            const probabilityAdjustment = -0.4 * (priceDiff / 3000)**2; 
+import tensorflow as tf
+from tensorflow import keras
+from tensorflow.keras import layers
 
-            // 최종 예측 확률을 계산하고 유효 범위(0.05% ~ 99%) 내로 제한합니다.
-            let predictedProb = baseProb + probabilityAdjustment;
-            predictedProb = Math.max(0.05, Math.min(0.99, predictedProb));
 
-            const expectedRevenue = price * predictedProb;
+from tqdm.auto import tqdm
 
-            return { predictedProb, expectedRevenue };
-        }
 
-        /**
-         * '가격 예측 실행' 버튼 클릭 시 호출됩니다.
-         */
-        function analyzePrice() {
-            const priceInput = document.getElementById('test-price');
-            const testPrice = parseInt(priceInput.value, 10);
-            const customer = customerData[currentCustomerId];
+# 재현성
+RANDOM_SEED = 42
+np.random.seed(RANDOM_SEED)
+tf.random.set_seed(RANDOM_SEED)
 
-            if (isNaN(testPrice) || testPrice <= 0) {
-                showMessage('가격이 유효하지 않습니다. 양수를 입력해주세요.', 'danger');
-                return;
-            }
 
-            const { predictedProb, expectedRevenue } = simulatePrediction(testPrice, customer);
+# 가격 & 피처 설정
+BASE_PRICE = 9000.0
+Feat_Col = ["multi_purchase_count", "total_purchase_last_month", "cart_abandon_count"]
 
-            // 예측 결과를 화면에 업데이트합니다.
-            document.getElementById('result-prob').textContent = `${(predictedProb * 100).toFixed(2)}%`;
-            document.getElementById('result-revenue').textContent = `${Math.round(expectedRevenue).toLocaleString()}원`;
 
-            // 메시지 박스에 결과를 비교한 텍스트를 표시합니다.
-            const optPrice = customer.optimalPrice;
-            const revenueAtOptPrice = optPrice * customer.baseProb; // 최적 가격에서의 기본 수익
+# DNN 하이퍼파라미터
+EPOCHS = 100
+BATCH_SIZE = 32
+LEARNING_RATE = 1e-3
+VAL_SPLIT = 0.2
+TEST_SIZE = 0.20
 
-            if (testPrice === optPrice) {
-                 showMessage(`입력하신 ${testPrice.toLocaleString()}원은 모델이 예측한 **최적 가격**과 일치합니다!`, 'success');
-            } else if (Math.abs(testPrice - optPrice) < 500) {
-                showMessage(`입력하신 가격은 최적 가격(${optPrice.toLocaleString()}원)에 매우 가깝습니다.`, 'warning');
-            } else if (testPrice < optPrice) {
-                 showMessage(`입력하신 가격은 최적 가격(${optPrice.toLocaleString()}원)보다 낮습니다. 가격을 조금 올려 수익을 더 높일 수 있습니다.`, 'warning');
-            } else {
-                 showMessage(`입력하신 가격은 최적 가격(${optPrice.toLocaleString()}원)보다 높습니다. 구매 확률 하락으로 예상 수익이 감소할 수 있습니다.`, 'warning');
-            }
-        }
 
-        /**
-         * 사용자에게 메시지를 표시하는 함수입니다. (alert() 대신 사용)
-         */
-        function showMessage(message, type) {
-            const box = document.getElementById('message-box');
-            box.innerHTML = message;
-            // 클래스를 초기화하고 새로운 스타일을 적용합니다.
-            box.className = `mt-6 p-3 text-sm rounded-lg border block`;
-            
-            if (type === 'success') {
-                box.classList.add('bg-green-100', 'text-green-800', 'border-green-300');
-            } else if (type === 'warning') {
-                box.classList.add('bg-yellow-100', 'text-yellow-800', 'border-yellow-300');
-            } else if (type === 'danger') {
-                box.classList.add('bg-red-100', 'text-red-800', 'border-red-300');
-            }
-        }
+# %% 2. 데이터 업로드 & 기본 전처리
 
-        function hideMessage() {
-            document.getElementById('message-box').classList.add('hidden');
-        }
-    </script>
-</body>
-</html>
+
+uploaded = files.upload()
+fname = list(uploaded.keys())[0]
+
+
+# 엑셀 읽기
+df = pd.read_excel(fname, sheet_name="Sheet1")
+df = df.reset_index(drop=True)
+df["customer_id"] = df.index.astype(int)
+
+
+print("Loaded shape:", df.shape)
+print("Columns:", df.columns.tolist())
+
+
+# 가격 조정용 분포 (0 제외)
+multi_vals = df.loc[df["multi_purchase_count"] > 0, "multi_purchase_count"]
+total_vals = df.loc[df["total_purchase_last_month"] > 0, "total_purchase_last_month"]
+abandon_vals = df.loc[df["cart_abandon_count"] > 0, "cart_abandon_count"]
+
+
+
+
+def scale_adjust(value, series, min_adj=-500, max_adj=500):
+    """분위수 기반 선형 보정"""
+    rank = (series <= value).mean()
+    return min_adj + (max_adj - min_adj) * rank
+
+
+
+
+def abandon_adjust(value, series, min_adj=-500, max_adj=-100):
+    """망설임(카트 이탈) 보정: 값이 클수록 더 큰 할인(더 음수 쪽)"""
+    rank = (series <= value).mean()
+    return min_adj + (max_adj - min_adj) * rank
+
+
+
+
+# 소비자별 맞춤 가격 계산
+adjusted_prices = []
+
+
+for _, row in df.iterrows():
+    multi_val = row["multi_purchase_count"]
+    total_val = row["total_purchase_last_month"]
+    abandon_val = row["cart_abandon_count"]
+
+
+    multi_adj = scale_adjust(multi_val, multi_vals)
+    total_adj = scale_adjust(total_val, total_vals)
+
+
+    if abandon_val > 0:
+        abandon_adj_val = abandon_adjust(abandon_val, abandon_vals)
+    else:
+        abandon_adj_val = 0.0
+
+
+    final_price = BASE_PRICE + multi_adj + total_adj + abandon_adj_val
+
+
+    # 완전 신규(모든 값 0)이면 기본가
+    if multi_val == 0 and total_val == 0 and abandon_val == 0:
+        final_price = BASE_PRICE
+
+
+    adjusted_prices.append(round(final_price, -2))  # 100원 단위 반올림
+
+
+df["adjusted_price"] = adjusted_prices
+
+
+# %% 3. Synthetic label & offered_price 생성
+
+
+rng = np.random.default_rng(RANDOM_SEED)
+
+
+lp_multi = np.log1p(df["multi_purchase_count"].astype(float).values)
+lp_total = np.log1p(df["total_purchase_last_month"].astype(float).values)
+lp_abnd  = np.log1p(df["cart_abandon_count"].astype(float).values)
+
+
+# 과거 히스토리 기반 가격 (대략적 변동)
+sens = 1.0 + 0.15 * (lp_abnd - lp_abnd.mean())  # 망설임이 많을수록 살짝 감도 조정
+hist_noise = rng.normal(loc=0.0, scale=400.0, size=len(df))
+
+
+offered_price = (BASE_PRICE * sens + hist_noise).clip(BASE_PRICE * 0.6, BASE_PRICE * 1.5)
+df["synthetic_historical_price"] = offered_price
+
+
+# 잠재 로짓 모델 → 구매 확률
+w0 = -0.2
+w_total = 0.9
+w_multi = 0.8
+w_abnd  = 1.0
+w_price = 2.0
+
+
+x_price = (offered_price - BASE_PRICE) / BASE_PRICE
+latent = w0 + w_total * lp_total + w_multi * lp_multi - w_abnd * lp_abnd - w_price * x_price
+prob   = 1 / (1 + np.exp(-latent))
+
+
+y = rng.binomial(n=1, p=prob, size=len(df))
+
+
+df["synthetic_conversion_prob"] = prob
+print("Positive rate (mean of y):", np.mean(y).round(4))
+
+
+# %% 4. 피처 구성 & 스케일링
+
+
+X_feats = df[Feat_Col].astype(float).copy()
+X_feats["offered_price"] = offered_price
+
+
+# count 계열은 log1p
+for col in Feat_Col:
+    X_feats[col] = np.log1p(X_feats[col])
+
+
+scaler = StandardScaler()
+X = scaler.fit_transform(X_feats.values)
+
+
+feature_names = list(X_feats.columns)
+print("Feature order:", feature_names)
+
+
+# %% 5. DNN 모델 정의
+
+
+def build_model(input_dim: int) -> keras.Model:
+    inp = keras.Input(shape=(input_dim,), name="features")
+    x = inp
+    for units in [32, 16]:
+        x = layers.Dense(units, activation="relu")(x)
+        x = layers.Dropout(0.1)(x)
+    out = layers.Dense(1, activation="sigmoid", name="purchase_prob")(x)
+
+
+    model = keras.Model(inputs=inp, outputs=out)
+    model.compile(
+        optimizer=keras.optimizers.Adam(learning_rate=LEARNING_RATE),
+        loss="binary_crossentropy",
+        metrics=["accuracy", keras.metrics.AUC(name="auc")],
+    )
+    return model
+
+
+# %% 6. Train / Val / Test split + 학습 & 검증
+
+
+all_idx = np.arange(X.shape[0])
+
+
+# 1) test 20% 홀드아웃
+X_trainval, X_test, y_trainval, y_test, idx_trainval, idx_test = train_test_split(
+    X, y, all_idx,
+    test_size=TEST_SIZE,
+    random_state=RANDOM_SEED,
+    stratify=y
+)
+
+
+# 2) train / val 분리
+X_train, X_val, y_train, y_val, idx_train, idx_val = train_test_split(
+    X_trainval, y_trainval, idx_trainval,
+    test_size=VAL_SPLIT,
+    random_state=RANDOM_SEED,
+    stratify=y_trainval
+)
+
+
+print(">> Shapes")
+print(f"  train: {X_train.shape}  val: {X_val.shape}  test: {X_test.shape}")
+
+
+# 모델 학습
+model = build_model(X.shape[1])
+
+
+callbacks = [
+    keras.callbacks.EarlyStopping(
+        patience=10, restore_best_weights=True,
+        monitor="val_auc", mode="max"
+    )
+]
+
+
+history = model.fit(
+    X_train, y_train,
+    validation_data=(X_val, y_val),
+    epochs=EPOCHS,
+    batch_size=BATCH_SIZE,
+    callbacks=callbacks,
+    verbose=0
+)
+
+
+# Validation metrics
+val_prob = model.predict(X_val, verbose=0).ravel()
+val_pred = (val_prob >= 0.5).astype(int)
+
+
+val_auc = roc_auc_score(y_val, val_prob)
+val_acc = accuracy_score(y_val, val_pred)
+val_prec, val_rec, val_f1, _ = precision_recall_fscore_support(
+    y_val, val_pred, average="binary", zero_division=0
+)
+
+
+print("\n== Validation metrics ==")
+print(f"AUC:  {val_auc:.4f}  ACC: {val_acc:.4f}  PREC: {val_prec:.4f}  REC: {val_rec:.4f}  F1: {val_f1:.4f}")
+
+
+# Test metrics (prob vs label)
+test_prob = model.predict(X_test, verbose=0).ravel()
+test_pred = (test_prob >= 0.5).astype(int)
+
+
+test_auc = roc_auc_score(y_test, test_prob)
+test_acc = accuracy_score(y_test, test_pred)
+test_prec, test_rec, test_f1, _ = precision_recall_fscore_support(
+    y_test, test_pred, average="binary", zero_division=0
+)
+
+
+mse   = mean_squared_error(y_test, test_prob)
+rmse  = float(np.sqrt(mse))
+mae   = mean_absolute_error(y_test, test_prob)
+brier = mse  # Brier score = MSE(prob, label)
+
+
+print("\n== Test metrics ==")
+print(f"AUC:  {test_auc:.4f}  ACC: {test_acc:.4f}  PREC: {test_prec:.4f}  REC: {test_rec:.4f}  F1: {test_f1:.4f}")
+print(f"MAE(prob vs label):  {mae:.4f}")
+print(f"RMSE(prob vs label): {rmse:.4f}")
+print(f"Brier score:         {brier:.4f}")
+
+
