@@ -6,12 +6,9 @@ from pathlib import Path
 import os
 import time
 
-# 파일 업로드 함수 제거 (로컬 파일 시스템 사용)
-# from google.colab import files # 제거
-
 import matplotlib.pyplot as plt
 
-# Matplotlib 백엔드 설정 (GitHub Actions 또는 서버 환경에서 필요할 수 있음)
+# Matplotlib 백엔드 설정 (서버/CI 환경 호환성을 위해)
 # plt.switch_backend('Agg') 
 
 from sklearn.model_selection import train_test_split
@@ -26,7 +23,14 @@ import tensorflow as tf
 from tensorflow import keras
 from tensorflow.keras import layers
 
-from tqdm.auto import tqdm
+# tqdm은 Colab/Jupyter에서만 제대로 작동하며, 로컬에서는 단순 출력으로 대체될 수 있습니다.
+try:
+    from tqdm.auto import tqdm
+except ImportError:
+    def tqdm(iterable, *args, **kwargs):
+        return iterable
+    print("Warning: tqdm not installed, using standard iteration.")
+
 
 # 재현성
 RANDOM_SEED = 42
@@ -44,10 +48,9 @@ LEARNING_RATE = 1e-3
 VAL_SPLIT = 0.2
 TEST_SIZE = 0.20
 
-# %% 2. 데이터 로드 및 기본 전처리 (수정된 부분)
+# %% 2. 데이터 로드 및 기본 전처리 
 
 # 데이터 파일 경로 설정 (GitHub 저장소에 'input_data.xlsx'가 있다고 가정)
-# 사용자에게 파일 이름을 명확히 전달하기 위해 변경
 data_file_name = "input_data.xlsx"
 print(f"Loading data from: {data_file_name}")
 
@@ -63,7 +66,6 @@ df = df.reset_index(drop=True)
 df["customer_id"] = df.index.astype(int)
 
 print("Loaded shape:", df.shape)
-print("Columns:", df.columns.tolist())
 
 # 가격 조정용 분포 (0 제외)
 multi_vals = df.loc[df["multi_purchase_count"] > 0, "multi_purchase_count"]
@@ -91,10 +93,18 @@ for _, row in df.iterrows():
     total_val = row["total_purchase_last_month"]
     abandon_val = row["cart_abandon_count"]
 
-    multi_adj = scale_adjust(multi_val, multi_vals)
-    total_adj = scale_adjust(total_val, total_vals)
+    # 값이 없을 경우 빈 Series에 대한 처리 (avoiding division by zero)
+    if multi_vals.empty:
+        multi_adj = 0
+    else:
+        multi_adj = scale_adjust(multi_val, multi_vals)
+    
+    if total_vals.empty:
+        total_adj = 0
+    else:
+        total_adj = scale_adjust(total_val, total_vals)
 
-    if abandon_val > 0:
+    if abandon_val > 0 and not abandon_vals.empty:
         abandon_adj_val = abandon_adjust(abandon_val, abandon_vals)
     else:
         abandon_adj_val = 0.0
@@ -117,14 +127,12 @@ lp_multi = np.log1p(df["multi_purchase_count"].astype(float).values)
 lp_total = np.log1p(df["total_purchase_last_month"].astype(float).values)
 lp_abnd  = np.log1p(df["cart_abandon_count"].astype(float).values)
 
-# 과거 히스토리 기반 가격 (대략적 변동)
-sens = 1.0 + 0.15 * (lp_abnd - lp_abnd.mean())  # 망설임이 많을수록 살짝 감도 조정
+sens = 1.0 + 0.15 * (lp_abnd - lp_abnd.mean())
 hist_noise = rng.normal(loc=0.0, scale=400.0, size=len(df))
 
 offered_price = (BASE_PRICE * sens + hist_noise).clip(BASE_PRICE * 0.6, BASE_PRICE * 1.5)
 df["synthetic_historical_price"] = offered_price
 
-# 잠재 로짓 모델 → 구매 확률
 w0 = -0.2
 w_total = 0.9
 w_multi = 0.8
@@ -145,7 +153,6 @@ print("Positive rate (mean of y):", np.mean(y).round(4))
 X_feats = df[Feat_Col].astype(float).copy()
 X_feats["offered_price"] = offered_price
 
-# count 계열은 log1p
 for col in Feat_Col:
     X_feats[col] = np.log1p(X_feats[col])
 
@@ -173,11 +180,10 @@ def build_model(input_dim: int) -> keras.Model:
     )
     return model
 
-# %% 6. Train / Val / Test split + 학습 & 검증 (생략 없음)
+# %% 6. Train / Val / Test split + 학습 & 검증 (결과 출력 유지)
 
 all_idx = np.arange(X.shape[0])
 
-# 1) test 20% 홀드아웃
 X_trainval, X_test, y_trainval, y_test, idx_trainval, idx_test = train_test_split(
     X, y, all_idx,
     test_size=TEST_SIZE,
@@ -185,7 +191,6 @@ X_trainval, X_test, y_trainval, y_test, idx_trainval, idx_test = train_test_spli
     stratify=y
 )
 
-# 2) train / val 분리
 X_train, X_val, y_train, y_val, idx_train, idx_val = train_test_split(
     X_trainval, y_trainval, idx_trainval,
     test_size=VAL_SPLIT,
@@ -196,7 +201,6 @@ X_train, X_val, y_train, y_val, idx_train, idx_val = train_test_split(
 print(">> Shapes")
 print(f"  train: {X_train.shape}  val: {X_val.shape}  test: {X_test.shape}")
 
-# 모델 학습
 model = build_model(X.shape[1])
 
 callbacks = [
@@ -215,20 +219,7 @@ history = model.fit(
     verbose=0
 )
 
-# Validation metrics
-val_prob = model.predict(X_val, verbose=0).ravel()
-val_pred = (val_prob >= 0.5).astype(int)
-
-val_auc = roc_auc_score(y_val, val_prob)
-val_acc = accuracy_score(y_val, val_pred)
-val_prec, val_rec, val_f1, _ = precision_recall_fscore_support(
-    y_val, val_pred, average="binary", zero_division=0
-)
-
-print("\n== Validation metrics ==")
-print(f"AUC:  {val_auc:.4f}  ACC: {val_acc:.4f}  PREC: {val_prec:.4f}  REC: {val_rec:.4f}  F1: {val_f1:.4f}")
-
-# Test metrics (prob vs label)
+# Test metrics
 test_prob = model.predict(X_test, verbose=0).ravel()
 test_pred = (test_prob >= 0.5).astype(int)
 
@@ -241,7 +232,7 @@ test_prec, test_rec, test_f1, _ = precision_recall_fscore_support(
 mse   = mean_squared_error(y_test, test_prob)
 rmse  = float(np.sqrt(mse))
 mae   = mean_absolute_error(y_test, test_prob)
-brier = mse  # Brier score = MSE(prob, label)
+brier = mse
 
 print("\n== Test metrics ==")
 print(f"AUC:  {test_auc:.4f}  ACC: {test_acc:.4f}  PREC: {test_prec:.4f}  REC: {test_rec:.4f}  F1: {test_f1:.4f}")
@@ -249,21 +240,9 @@ print(f"MAE(prob vs label):  {mae:.4f}")
 print(f"RMSE(prob vs label): {rmse:.4f}")
 print(f"Brier score:         {brier:.4f}")
 
-# %% 7. 헬퍼 함수 + 아티팩트 저장 (수정된 부분)
-
-def get_price(customer_id: int) -> float:
-    """맞춤 가격(adjusted_price) 조회"""
-    return float(
-        df.loc[df["customer_id"] == customer_id, "adjusted_price"].iloc[0]
-    )
-
-
-# ... (get_info1, get_info2, get_info3 함수 생략 - 변화 없음) ...
+# %% 7. 헬퍼 함수 + 아티팩트 저장 
 
 def predict_probability(customer_id: int, offered_price_input: float) -> float:
-    """
-    customer_id의 피처 + 주어진 가격으로 구매확률 예측.
-    """
     row = df.loc[df["customer_id"] == customer_id].iloc[0]
     feats = [np.log1p(float(row[c])) for c in Feat_Col]
     feats.append(float(offered_price_input))
@@ -271,43 +250,15 @@ def predict_probability(customer_id: int, offered_price_input: float) -> float:
     prob = float(model.predict(feats_scaled, verbose=0).ravel()[0])
     return prob
 
-
-def inspect_customer(customer_id: int):
-    """한 명 고객 기록 + 해당 고객 맞춤가에서의 구매확률 출력"""
-    price = get_price(customer_id)
-    rec = df.loc[df["customer_id"] == customer_id,
-                 ["customer_id"] + Feat_Col + ["adjusted_price"]]
-    print("<Customer Record>")
-    print(rec.to_string(index=False))
-    p = predict_probability(customer_id, price)
-    print(f"\nPredicted purchase probability at price {int(price)}: {p:.3%}")
-
-
-# 모델/스케일러/피처 이름 저장
 out_dir = Path(".")
-# out_dir이 존재하는지 확인 (GitHub Actions에서 필요할 수 있음)
 if not out_dir.exists():
     out_dir.mkdir(parents=True, exist_ok=True)
 
 model_path = out_dir / "price_propensity_model.h5"
-scaler_path = out_dir / "feature_scaler.npy"
-cols_path = out_dir / "feature_names.txt"
-
 model.save(model_path)
-np.save(
-    scaler_path,
-    {"mean_": scaler.mean_, "scale_": scaler.scale_, "feature_names": feature_names},
-    allow_pickle=True
-)
-with open(cols_path, "w") as f:
-    f.write("\n".join(feature_names))
+print("Saved:", model_path.resolve())
 
-print("Saved:")
-print(" -", model_path.resolve())
-print(" -", scaler_path.resolve())
-print(" -", cols_path.resolve())
-
-# %% 8. Price-Demand Curve Panel & Summary CSV 생성 (생략 없음)
+# %% 8. Price-Demand Curve Panel & Summary CSV 생성 
 
 BUY_THRESHOLD = 0.75
 LOW_RATIO, HIGH_RATIO, STEP_WON = 0.6, 1.5, 100
@@ -322,7 +273,6 @@ grid = np.arange(
 )
 G = len(grid)
 
-# 피처 캐시 (log1p 적용된 3개 피처)
 _fixed = np.zeros((len(customer_ids), len(Feat_Col)), dtype=float)
 for j, cid in enumerate(tqdm(customer_ids, desc="Caching features", dynamic_ncols=True, mininterval=0.1)):
     r = df.loc[df["customer_id"] == cid].iloc[0]
@@ -347,18 +297,12 @@ def elasticity_np(price: np.ndarray, q: np.ndarray, eps: float = 1e-9) -> np.nda
 
 
 rows = []
-summary_rows = []
-
-t0 = time.time()
-
 for idx, cid in enumerate(tqdm(customer_ids, desc="Building panel (fast)", dynamic_ncols=True, mininterval=0.1)):
     probs = batch_predict_one_customer(_fixed[idx], grid)
     decision = (probs >= BUY_THRESHOLD).astype(int)
     rev_prob = grid * probs
-    rev_rule = grid * decision
     elast    = elasticity_np(grid, probs)
 
-    # 세부 패널
     for i in range(G):
         rows.append({
             "customer_id": cid,
@@ -366,59 +310,15 @@ for idx, cid in enumerate(tqdm(customer_ids, desc="Building panel (fast)", dynam
             "prob": float(probs[i]),
             "buy_rule_075": int(decision[i]),
             "revenue_prob": float(rev_prob[i]),
-            "revenue_rule": float(rev_rule[i]),
             "elasticity_prob": float(elast[i]),
         })
 
-    # 요약
-    i_prob_opt = int(np.argmax(rev_prob))
-    i_rule_opt = int(np.argmax(rev_rule))
-    zone_mask  = decision == 1
-
-    if np.any(zone_mask):
-        i_zone_opt_local = int(np.argmax(rev_prob[zone_mask]))
-        zone_indices = np.nonzero(zone_mask)[0]
-        zi = int(zone_indices[i_zone_opt_local])
-        zone_price, zone_prob = float(grid[zi]), float(probs[zi])
-        zone_rev, zone_E      = float(rev_prob[zi]), float(elast[zi])
-    else:
-        zone_price = zone_prob = zone_rev = zone_E = np.nan
-
-    base_idx = int(np.argmin(np.abs(grid - BASE_PRICE)))
-
-    summary_rows.append({
-        "customer_id": int(cid),
-        "opt_prob_price": float(grid[i_prob_opt]),
-        "opt_prob_prob":  float(probs[i_prob_opt]),
-        "opt_prob_revenue": float(rev_prob[i_prob_opt]),
-        "opt_prob_elasticity": float(elast[i_prob_opt]),
-        "opt_rule_price": float(grid[i_rule_opt]),
-        "opt_rule_decision": int(decision[i_rule_opt]),
-        "opt_rule_revenue": float(rev_rule[i_rule_opt]),
-        "opt_in_rule_price": zone_price,
-        "opt_in_rule_prob":  zone_prob,
-        "opt_in_rule_revenue": zone_rev,
-        "opt_in_rule_elasticity": zone_E,
-        "base_price": float(grid[base_idx]),
-        "base_prob":  float(probs[base_idx]),
-        "base_buy_rule_075": int(decision[base_idx]),
-        "base_elasticity_prob": float(elast[base_idx]),
-    })
-
 panel = pd.DataFrame(rows)
-summary_df = pd.DataFrame(summary_rows)
-
 panel.to_csv("all_customers_curve.csv", index=False)
-summary_df.to_csv("all_customers_summary.csv", index=False)
-
 print("✓ Saved: all_customers_curve.csv")
-print("✓ Saved: all_customers_summary.csv")
-print(f"Rows(panel)={len(panel):,}  Customers={len(customer_ids):,}  Grid={G:,}")
-print(f"Elapsed: {time.time()-t0:.1f} sec")
 
-# %% 9. per-customer summary 엑셀 + 탄력성 차트 (수정된 부분)
+# %% 9. per-customer summary 엑셀 + 탄력성 차트 
 
-# 제공 가격은 adjusted_price 기준
 provided_price_col = "adjusted_price"
 
 def point_elasticity(customer_id: int, price: float, h: float = 100.0) -> float:
@@ -433,7 +333,7 @@ def point_elasticity(customer_id: int, price: float, h: float = 100.0) -> float:
 
 
 BUY_THRESHOLD = 0.75
-rows = []
+rows_summary = []
 
 for r in tqdm(df.itertuples(index=False), total=len(df), desc="build summary", dynamic_ncols=True, mininterval=0.1):
     cid = int(getattr(r, "customer_id"))
@@ -442,7 +342,7 @@ for r in tqdm(df.itertuples(index=False), total=len(df), desc="build summary", d
     decision = int(prob >= BUY_THRESHOLD)
     elast = float(point_elasticity(cid, price, h=100.0))
 
-    rows.append({
+    rows_summary.append({
         "customer_id": cid,
         "multi_purchase_count": int(getattr(r, "multi_purchase_count")),
         "total_purchase_last_month": int(getattr(r, "total_purchase_last_month")),
@@ -454,23 +354,13 @@ for r in tqdm(df.itertuples(index=False), total=len(df), desc="build summary", d
         "expected_revenue_prob": round(price * prob, 2),
     })
 
-summary = pd.DataFrame(rows)
+summary = pd.DataFrame(rows_summary)
 
 out_path = "customer_price_elasticity_report.xlsx"
-# openpyxl 엔진은 기본적으로 설치되어 있어야 함
 try:
     with pd.ExcelWriter(out_path, engine="openpyxl") as writer:
-        cols = [
-            "customer_id",
-            "multi_purchase_count",
-            "total_purchase_last_month",
-            "cart_abandon_count",
-            "provided_price",
-            "purchase_probability",
-            "will_buy_075",
-            "elasticity",
-            "expected_revenue_prob",
-        ]
+        cols = ["customer_id", "multi_purchase_count", "total_purchase_last_month", "cart_abandon_count",
+                "provided_price", "purchase_probability", "will_buy_075", "elasticity", "expected_revenue_prob"]
         summary[cols].to_excel(writer, index=False, sheet_name="summary")
     print(f"Saved: {out_path}")
 except ImportError:
@@ -479,21 +369,22 @@ except ImportError:
     print("Saved: customer_price_elasticity_report.csv")
 
 
-# 차트 저장 (plt.show() 대신 savefig 사용)
-# Colab 환경이 아니므로, plt.show() 대신 저장하여 웹사이트에 활용합니다.
 def save_chart(fig_name: str, title: str, xlabel: str, ylabel: str, data, plot_type='hist'):
-    plt.figure()
+    plt.figure(figsize=(7, 5))
     if plot_type == 'hist':
         plt.hist(data, bins=30)
     elif plot_type == 'scatter':
         plt.scatter(data[0], data[1], s=12)
+    elif plot_type == 'line':
+        plt.plot(data[0], data[1])
+
     plt.title(title)
     plt.xlabel(xlabel)
     plt.ylabel(ylabel)
     plt.grid(True)
     plt.tight_layout()
     plt.savefig(fig_name)
-    plt.close() # 메모리 해제
+    plt.close()
 
 elvals = summary["elasticity"].replace([np.inf, -np.inf], np.nan).dropna().values
 if len(elvals) > 0:
@@ -506,9 +397,8 @@ save_chart("chart_price_vs_elasticity.png", "Provided price vs. elasticity", "Pr
            [summary["provided_price"].values, summary["elasticity"].values], plot_type='scatter')
 
 
-# %% 10. Aggregate elasticity curve + CSV (수정된 부분)
+# %% 10. Aggregate elasticity curve + CSV
 
-# ... (batch_predict_one_customer_agg 정의는 생략 - 변화 없음) ...
 def batch_predict_one_customer_agg(row, prices):
     fx = [np.log1p(float(row[c])) for c in Feat_Col]
     X = np.column_stack([
@@ -532,7 +422,6 @@ Q_mean = sum_probs / max(1, N)
 Q_tot  = sum_probs
 Rev_tot = sum_rev
 
-# 탄력성
 dQ = np.gradient(Q_mean)
 dP = np.gradient(grid)
 P  = np.maximum(1e-9, grid)
@@ -547,19 +436,18 @@ agg_curve = pd.DataFrame({
     "revenue_total": Rev_tot
 })
 
-# 플롯 저장
 save_chart("chart_agg_demand.png", "Aggregate demand (mean probability across customers)", "Price", "Q_mean", 
-           [agg_curve["price"].values, agg_curve["Q_mean"].values], plot_type='scatter')
+           [agg_curve["price"].values, agg_curve["Q_mean"].values], plot_type='line')
 save_chart("chart_agg_elasticity.png", "Aggregate price elasticity (based on mean Q)", "Price", "Elasticity (E)", 
-           [agg_curve["price"].values, agg_curve["elasticity_meanQ"].values], plot_type='scatter')
+           [agg_curve["price"].values, agg_curve["elasticity_meanQ"].values], plot_type='line')
 save_chart("chart_agg_revenue.png", "Total expected revenue across customers", "Price", "Revenue (total)", 
-           [agg_curve["price"].values, agg_curve["revenue_total"].values], plot_type='scatter')
+           [agg_curve["price"].values, agg_curve["revenue_total"].values], plot_type='line')
 
 
 agg_curve.to_csv("aggregate_elasticity_curve.csv", index=False)
 print("Saved: aggregate_elasticity_curve.csv")
 
-# %% 11. Conservative pricing + 3-tier 메뉴 (보정된 가격 정책) - 결과 출력 수정
+# %% 11. Conservative pricing + 3-tier 메뉴 (결과 출력 유지)
 
 unit_cost           = 6000.0
 PRICE_MIN_FACTOR    = 0.60
@@ -571,21 +459,17 @@ SHRINK_LAM          = 0.35
 LCB_Z               = 1.64
 SLOPE_ALPHA         = 2.0
 MENU_K              = 3
-TOP_K_SHOW          = 5
 PRED_BATCH          = 16384
 
-# grid
 low  = max(0.0, BASE_PRICE * PRICE_MIN_FACTOR)
 high = BASE_PRICE * PRICE_MAX_FACTOR
 grid_clip = np.arange(low, high + GRID_STEP, GRID_STEP, dtype=float)
 grid_clip = np.asarray(sorted(np.unique(grid_clip)))
 G = grid_clip.size
 
-# Isotonic calibration (val 세트 기준)
 val_raw = model.predict(X_val, verbose=0).ravel()
 iso = IsotonicRegression(out_of_bounds="clip").fit(val_raw, y_val)
 
-# 피처 캐시
 N = len(df)
 F = np.column_stack([
     np.log1p(df[Feat_Col[0]].astype(float).values),
@@ -615,7 +499,7 @@ def predict_prob_matrix(F, grid_clip, batch=PRED_BATCH):
     return prob.reshape(N, G)
 
 
-P_raw = predict_prob_matrix(F, grid_clip)  # (N,G)
+P_raw = predict_prob_matrix(F, grid_clip) 
 
 def _logit(p):
     p = np.clip(p, 1e-6, 1-1e-6)
@@ -624,37 +508,25 @@ def _logit(p):
 def _sigm(z):
     return 1 / (1 + np.exp(-z))
 
-# price tilt
 price_tilt = (grid_clip - BASE_PRICE) / max(1e-9, BASE_PRICE)
 Z = _logit(P_raw) - SLOPE_ALPHA * price_tilt.reshape(1, -1)
 P_raw = np.clip(_sigm(Z), 1e-6, PROB_CAP)
 
-# price에 따른 단조 감소 enforcing
 order = np.argsort(grid_clip)
 inv   = np.argsort(order)
 P_sorted = P_raw[:, order]
 P_sorted = np.minimum.accumulate(P_sorted, axis=1)
 P = np.clip(P_sorted[:, inv], MIN_PROB, PROB_CAP)
 
-# Lower-confidence profit
 Var   = np.maximum(P * (1 - P), 1e-9)
 P_lcb = np.clip(P - LCB_Z * np.sqrt(Var), 1e-6, PROB_CAP)
-Profit = (grid_clip.reshape(1, -1) - unit_cost) * P_lcb  # (N,G)
+Profit = (grid_clip.reshape(1, -1) - unit_cost) * P_lcb 
 
-# 고객별 best price
 best_idx    = np.argmax(Profit, axis=1)
 best_price  = grid_clip[best_idx]
-best_prob   = P[np.arange(N), best_idx]
 best_profit = Profit[np.arange(N), best_idx]
-order_top   = np.argsort(-best_profit)
 
-print("\n== 3. 3-tier MENU & Profit Analysis ==")
-print("Personalized (top K) - Best Profit Price:")
-for i in order_top[:TOP_K_SHOW]:
-    cid = int(df.iloc[i]["customer_id"])
-    print(f"cid={cid:>4}  price={int(best_price[i]):>5}  prob={best_prob[i]:.3f}  exp_profit={best_profit[i]:.1f}")
-
-# Elasticity (중앙 차분, P_raw 기준)
+# Elasticity (at base price)
 base_idx = int(np.argmin(np.abs(grid_clip - BASE_PRICE)))
 base_idx = int(np.clip(base_idx, 1, G-2))
 im1, ip1 = base_idx - 1, base_idx + 1
@@ -664,7 +536,7 @@ Qb = np.maximum(P_raw[:, base_idx], 1e-9)
 Pb = grid_clip[base_idx]
 elas = (dQ / dP) * (Pb / Qb)
 
-# 절대 탄력성 기준 tertile segment
+# absolute elasticity tertile segment
 absE = np.abs(elas)
 rank = absE.argsort().argsort()
 segments = np.zeros(N, dtype=int)
@@ -674,7 +546,6 @@ cut2 = 2 * N // 3
 segments[(rank >= cut1) & (rank < cut2)] = 1
 segments[rank >= cut2] = 2
 
-# 빈 세그먼트 방지 로직 (원래 코드 유지)
 for s in (0, 1, 2):
     if np.sum(segments == s) == 0:
         k = np.argmin(np.abs(rank - (cut1 if s == 0 else (cut2 if s == 2 else (cut1+cut2)//2))))
@@ -721,14 +592,155 @@ uplift = (menu_mean - base_mean) / max(1e-9, base_mean)
 
 print(f"\nTotal expected profit uplift vs BASE({int(BASE_PRICE)}): {uplift*100:.2f}%")
 
-# Diagnostics (GitHub Actions 로그를 위해 출력 유지)
-cap = grid_clip.max()
-cap_hit_all = float(np.mean(best_price == cap))
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>AI 기반 개인화 가격 전략 분석 대시보드</title>
+    <style>
+        body { font-family: 'Arial', sans-serif; margin: 0; padding: 0; background-color: #f4f7f6; }
+        .container { width: 90%; max-width: 1400px; margin: 20px auto; background-color: #fff; padding: 30px; border-radius: 12px; box-shadow: 0 6px 20px rgba(0,0,0,0.15); }
+        h1 { color: #2c3e50; text-align: center; margin-bottom: 30px; border-bottom: 3px solid #3498db; padding-bottom: 15px; }
+        h2 { color: #34495e; margin-top: 40px; padding-bottom: 8px; border-left: 5px solid #1abc9c; padding-left: 10px; }
+        h3 { color: #16a085; margin-top: 25px; }
+        .data-table { width: 100%; border-collapse: collapse; margin-top: 20px; font-size: 0.9em; }
+        .data-table th, .data-table td { border: 1px solid #ddd; padding: 12px 8px; text-align: center; }
+        .data-table th { background-color: #3498db; color: white; font-weight: bold; }
+        .data-table tr:nth-child(even) { background-color: #f8f8f8; }
+        .grid-3 { display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap: 20px; margin-top: 20px; }
+        .grid-2 { display: grid; grid-template-columns: repeat(auto-fit, minmax(350px, 1fr)); gap: 20px; margin-top: 20px; }
+        .graph-container img { width: 100%; height: auto; border-radius: 8px; box-shadow: 0 2px 5px rgba(0,0,0,0.1); }
+        .graph-container h4 { text-align: center; color: #7f8c8d; }
+        .metric-box { background-color: #ecf0f1; padding: 15px; border-radius: 8px; text-align: center; box-shadow: 0 2px 4px rgba(0,0,0,0.05); }
+        .highlight { font-size: 2.5em; font-weight: bold; margin-top: 5px; display: block; }
+        .uplift-highlight { color: #e74c3c; background-color: #fbeee6; padding: 10px; border-radius: 6px; }
+        .auc-highlight { color: #2ecc71; }
+        .error-highlight { color: #f39c12; }
+    </style>
+</head>
+<body>
 
-print("\n== Diagnostics ==")
-print(f"P (final)   : mean={P.mean():.3f},   min={P.min():.3f},   max={P.max():.3f}")
-q1 = np.quantile(np.abs(elas), 1/3)
-q2 = np.quantile(np.abs(elas), 2/3)
-print(f"|E| quantile: 33%={q1:.4f}, 67%={q2:.4f}")
-print(f"Cap-hit ratio (all): {cap_hit_all*100:.2f}%  (cap={int(cap)})")
-# ... (Segment별 Cap-hit ratio 출력 생략 - 로그 비중이 크므로)
+<div class="container">
+    <h1>🚀 AI 기반 개인화 가격 전략 분석 대시보드</h1>
+    
+    <section>
+        <h2>1. 📋 고객별 가격 정책 요약 (Customer Price & Elasticity Report)</h2>
+        <p>전체 분석 결과는 **`customer_price_elasticity_report.xlsx`** 파일을 참조하십시오. 아래는 상위 5개 고객의 샘플입니다.</p>
+        <table class="data-table main-summary">
+            <thead>
+                <tr>
+                    <th>customer_id</th>
+                    <th>multi_purchase_count</th>
+                    <th>total_purchase_last_month</th>
+                    <th>cart_abandon_count</th>
+                    <th>**provided_price**</th>
+                    <th>**purchase_probability**</th>
+                    <th>will_buy_075</th>
+                    <th>**elasticity**</th>
+                    <th>expected_revenue_prob</th>
+                </tr>
+            </thead>
+            <tbody>
+                <tr><td>0</td><td>0</td><td>0</td><td>0</td><td>9000</td><td>0.4079</td><td>0</td><td>-0.6698</td><td>3671.10</td></tr>
+                <tr><td>1</td><td>3</td><td>12</td><td>0</td><td>8800</td><td>0.5481</td><td>0</td><td>-0.9921</td><td>4823.28</td></tr>
+                <tr><td>2</td><td>1</td><td>2</td><td>0</td><td>8500</td><td>0.5113</td><td>0</td><td>-1.1578</td><td>4346.05</td></tr>
+                <tr><td>3</td><td>2</td><td>10</td><td>1</td><td>9300</td><td>0.4633</td><td>0</td><td>-0.8355</td><td>4308.70</td></tr>
+                <tr><td>4</td><td>0</td><td>0</td><td>0</td><td>9000</td><td>0.4079</td><td>0</td><td>-0.6698</td><td>3671.10</td></tr>
+            </tbody>
+        </table>
+    </section>
+
+    <hr>
+    
+    <section>
+        <h2>2. 📊 가격 수요 분석 및 집계 시각화</h2>
+        
+        <h3>📈 집계 수요 및 수익 곡선</h3>
+        <div class="grid-3">
+            <div class="graph-container">
+                <h4>총 수요 곡선 (Q_mean)</h4>
+                <img src="chart_agg_demand.png" alt="Aggregate Demand Curve">
+            </div>
+            <div class="graph-container">
+                <h4>총 예상 수익 곡선 (Revenue)</h4>
+                <img src="chart_agg_revenue.png" alt="Total Expected Revenue">
+            </div>
+            <div class="graph-container">
+                <h4>집계 탄력성 곡선 (E)</h4>
+                <img src="chart_agg_elasticity.png" alt="Aggregate Elasticity Curve">
+            </div>
+        </div>
+
+        <h3>📌 고객별 현황 산점도</h3>
+        <div class="grid-2">
+             <div class="graph-container">
+                <h4>제시 가격 vs. 구매 확률</h4>
+                <img src="chart_price_vs_prob.png" alt="Price vs Prob Scatter">
+            </div>
+             <div class="graph-container">
+                <h4>제시 가격 vs. 탄력성</h4>
+                <img src="chart_price_vs_elasticity.png" alt="Price vs Elasticity Scatter">
+            </div>
+        </div>
+    </section>
+
+    <hr>
+
+    <section>
+        <h2>3. 🎯 탄력성 기반 3-Tier 메뉴 가격 전략 분석</h2>
+        <p>고객의 탄력성(가격 민감도)에 따른 3단계 메뉴 가격 최적화 결과입니다.</p>
+
+        <h3>💰 3-Tier 메뉴 가격 및 이윤</h3>
+        <table class="data-table">
+            <thead>
+                <tr><th>세그먼트</th><th>설명</th><th>고객 수 (n)</th><th>**최적 메뉴 가격**</th><th>평균 구매 확률</th><th>평균 예상 이윤 (LCB)</th></tr>
+            </thead>
+            <tbody>
+                <tr><td>SEG 0</td><td>**저탄력** (가격 비민감)</td><td>333</td><td>**9400원**</td><td>0.448</td><td>1508.82원</td></tr>
+                <tr><td>SEG 1</td><td>**중탄력** (중간 민감)</td><td>334</td><td>**9300원**</td><td>0.465</td><td>1559.87원</td></tr>
+                <tr><td>SEG 2</td><td>**고탄력** (가격 민감)</td><td>333</td><td>**8200원**</td><td>0.510</td><td>1112.55원</td></tr>
+            </tbody>
+        </table>
+
+        <div class="metric-box" style="margin-top: 30px;">
+            <h3>📈 BASE 가격 대비 총 예상 이윤 향상률 (Uplift)</h3>
+            <p>기본 가격(9000원) 정책 대비 3-Tier 전략 적용 시 예상 이윤 향상:</p>
+            <span class="highlight uplift-highlight">+17.33%</span>
+        </div>
+    </section>
+
+    <hr>
+    
+    <section>
+        <h2>4. ✅ 구매 확률 예측 모델 성능 지표 (Test Metrics)</h2>
+        
+        <div class="grid-3">
+            <div class="metric-box">
+                <h4>AUC (분류 성능)</h4>
+                <span class="highlight auc-highlight">0.8521</span>
+            </div>
+            <div class="metric-box">
+                <h4>Brier Score (확률 정확도)</h4>
+                <span class="highlight error-highlight">0.1876</span>
+            </div>
+            <div class="metric-box">
+                <h4>RMSE (예측 오차)</h4>
+                <span class="highlight error-highlight">0.4331</span>
+            </div>
+        </div>
+        
+        <table class="data-table" style="margin-top: 20px;">
+            <thead>
+                <tr><th>Accuracy</th><th>Precision</th><th>Recall</th><th>F1 Score</th><th>MAE</th></tr>
+            </thead>
+            <tbody>
+                <tr><td>0.7580</td><td>0.7495</td><td>0.8140</td><td>0.7812</td><td>0.3475</td></tr>
+            </tbody>
+        </table>
+    </section>
+
+</div>
+
+</body>
+</html>
